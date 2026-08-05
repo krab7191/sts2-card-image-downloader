@@ -4,7 +4,9 @@ Browser automation script that discovers cards on
 [sts2.untapped.gg](https://sts2.untapped.gg) by rarity and downloads the
 card artwork, using Playwright to drive a real Chromium browser.
 
-Output goes to `cards/<rarity>/<slug>.png`.
+Output goes to `cards/<rarity>/<slug>.png`, plus
+`cards/<rarity>/<slug>-upgraded.png` for cards with a Base/Upgraded
+toggle.
 
 ## Install
 
@@ -52,10 +54,24 @@ For each rarity:
    the download button is the one with a `fa-arrow-down-to-line` icon).
 4. Clicks the download button and saves the resulting file to
    `cards/<rarity>/<slug>.png`.
+5. If the card has a Base/Upgraded toggle (`role="radiogroup"`), clicks
+   "Upgraded" and repeats the hover/download step, saving to
+   `cards/<rarity>/<slug>-upgraded.png`. Not all cards have this toggle
+   (e.g. Quest cards) — those are silently skipped for the upgraded pass.
+   Set `include_upgraded=False` in `DownloaderConfig` to skip it for all
+   cards.
 
-Cards whose output file already exists are skipped (set `overwrite=True`
-in `DownloaderConfig` to re-download). Failed cards are retried once and
-summarized at the end of the run.
+Note on the toggle: the site actually renders both the Base and Upgraded
+card as separate DOM elements simultaneously and hides the inactive one
+with CSS rather than unmounting it — the script targets whichever one is
+currently `:visible` rather than assuming DOM order.
+
+Each output file is checked independently before doing any work — if
+`<slug>.png` already exists but `<slug>-upgraded.png` doesn't, a rerun
+will fetch only the missing one instead of skipping the card outright or
+re-downloading both. Set `overwrite=True` in `DownloaderConfig` to force
+re-downloading everything. Failed cards are retried once and summarized
+at the end of the run.
 
 ## Config
 

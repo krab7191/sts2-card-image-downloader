@@ -4,14 +4,15 @@ STS2 Card Downloader
 Discovers cards on Untapped.gg by filtering the card listing by rarity
 (via the `?rarity=` query param, paginating as needed), then visits each
 card page, hovers to reveal the download control, and clicks it to save
-the card artwork locally.
+the card artwork locally. Cards with a Base/Upgraded toggle are saved as
+both variants.
 
 Usage:
   pip install -r requirements.txt
   playwright install chromium
   python3 sts2_card_downloader.py
 
-Output: ./cards/<rarity>/*.png
+Output: ./cards/<rarity>/<slug>.png and ./cards/<rarity>/<slug>-upgraded.png
 """
 from __future__ import annotations
 
@@ -34,10 +35,17 @@ logger = logging.getLogger("sts2_card_downloader")
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
+Variant = Literal["base", "upgraded"]
+
 # The wrapper that reveals a copy/download button pair on hover. Scoping to
 # this (rather than searching the whole page) avoids matching unrelated
 # "download the overlay app" nav/promo links elsewhere on the site.
+#
+# Cards with a Base/Upgraded toggle render *two* of these wrappers at once
+# (one per variant) and hide the inactive one with CSS rather than
+# unmounting it, so ":visible" is required to land on the active one.
 _CARD_WRAPPER_SELECTOR = '[class*="HoverCopyButton-module-scss-module"][class*="container"]'
+_VISIBLE_CARD_WRAPPER_SELECTOR = f"{_CARD_WRAPPER_SELECTOR}:visible"
 _DOWNLOAD_BUTTON_SELECTOR = 'button:has(i.fa-arrow-down-to-line)'
 
 
@@ -50,6 +58,7 @@ class DownloaderConfig(BaseModel):
     card_base_url: HttpUrl = HttpUrl("https://sts2.untapped.gg/en/cards/")
     output_dir: Path = Path("cards")
     rarities: list[str] = Field(default_factory=lambda: ["ancient"])
+    include_upgraded: bool = True
     max_cards_per_rarity: int | None = None
     max_listing_pages: int = 20
     headless: bool = False
@@ -81,13 +90,15 @@ class DownloaderConfig(BaseModel):
             url += f"&page={page}"
         return url
 
-    def output_path(self, rarity: str, slug: str) -> Path:
-        return self.output_dir / rarity / f"{slug}.png"
+    def output_path(self, rarity: str, slug: str, variant: Variant) -> Path:
+        filename = f"{slug}-upgraded.png" if variant == "upgraded" else f"{slug}.png"
+        return self.output_dir / rarity / filename
 
 
 class CardResult(BaseModel):
     rarity: str
     slug: str
+    variant: Variant
     status: Literal["downloaded", "skipped", "no_button", "timeout", "error"]
     path: Path | None = None
     detail: str | None = None
@@ -111,7 +122,7 @@ class RunSummary(BaseModel):
     def report(self) -> str:
         lines = [f"Done: {len(self.succeeded)} ok, {len(self.failed)} failed"]
         for r in self.failed:
-            lines.append(f"  FAILED {r.rarity}/{r.slug}: {r.status} ({r.detail})")
+            lines.append(f"  FAILED {r.rarity}/{r.slug} ({r.variant}): {r.status} ({r.detail})")
         return "\n".join(lines)
 
 
@@ -147,18 +158,11 @@ class CardDownloader:
         logger.info("Discovered %d %s card(s)", len(slugs), rarity)
         return slugs
 
-    async def download_card(self, rarity: str, slug: str) -> CardResult:
-        out_path = self.config.output_path(rarity, slug)
-        if out_path.exists() and not self.config.overwrite:
-            logger.info("Skipping %s/%s (already exists)", rarity, slug)
-            return CardResult(rarity=rarity, slug=slug, status="skipped", path=out_path)
-
+    async def download_card(self, rarity: str, slug: str) -> list[CardResult]:
         last_error: str | None = None
         for attempt in range(1, self.config.max_attempts_per_card + 1):
             try:
-                return await self._attempt_download(rarity, slug, out_path)
-            except _NoDownloadButton:
-                return CardResult(rarity=rarity, slug=slug, status="no_button")
+                return await self._attempt_download(rarity, slug)
             except PlaywrightTimeoutError as e:
                 last_error = str(e)
                 logger.warning(
@@ -175,25 +179,74 @@ class CardDownloader:
         status: Literal["timeout", "error"] = (
             "timeout" if last_error and "Timeout" in last_error else "error"
         )
-        return CardResult(rarity=rarity, slug=slug, status=status, detail=last_error)
+        return [CardResult(rarity=rarity, slug=slug, variant="base", status=status, detail=last_error)]
 
-    async def _attempt_download(self, rarity: str, slug: str, out_path: Path) -> CardResult:
+    async def _attempt_download(self, rarity: str, slug: str) -> list[CardResult]:
+        base_path = self.config.output_path(rarity, slug, "base")
+        upgraded_path = self.config.output_path(rarity, slug, "upgraded")
+        need_base = self.config.overwrite or not base_path.exists()
+        need_upgraded = self.config.include_upgraded and (
+            self.config.overwrite or not upgraded_path.exists()
+        )
+
+        if not need_base and not need_upgraded:
+            logger.info("Skipping %s/%s (already exists)", rarity, slug)
+            results = [CardResult(rarity=rarity, slug=slug, variant="base", status="skipped", path=base_path)]
+            if self.config.include_upgraded:
+                results.append(
+                    CardResult(rarity=rarity, slug=slug, variant="upgraded", status="skipped", path=upgraded_path)
+                )
+            return results
+
         url = self.config.card_url(slug)
         logger.info("Loading: %s/%s ...", rarity, slug)
         await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.nav_timeout_ms)
 
-        card_locator = self.page.locator(_CARD_WRAPPER_SELECTOR).first
-        await card_locator.wait_for(state="visible", timeout=self.config.card_visible_timeout_ms)
-        await card_locator.hover()
+        results: list[CardResult] = []
+        if need_base:
+            results.append(await self._download_variant_safe(rarity, slug, "base", base_path))
+        else:
+            results.append(CardResult(rarity=rarity, slug=slug, variant="base", status="skipped", path=base_path))
 
-        download_btn = card_locator.locator(_DOWNLOAD_BUTTON_SELECTOR).first
+        if self.config.include_upgraded and await self.page.locator('[role="radiogroup"]').count() > 0:
+            if need_upgraded:
+                await self._select_variant("upgraded")
+                results.append(await self._download_variant_safe(rarity, slug, "upgraded", upgraded_path))
+            else:
+                results.append(
+                    CardResult(rarity=rarity, slug=slug, variant="upgraded", status="skipped", path=upgraded_path)
+                )
+
+        return results
+
+    async def _select_variant(self, label: Variant) -> None:
+        radiogroup = self.page.locator('[role="radiogroup"]').first
+        radio = radiogroup.locator('[role="radio"]', has_text=label.capitalize())
+        await radio.first.click()
+
+    async def _download_variant_safe(
+        self, rarity: str, slug: str, variant: Variant, out_path: Path
+    ) -> CardResult:
+        try:
+            return await self._download_variant(rarity, slug, variant, out_path)
+        except _NoDownloadButton:
+            return CardResult(rarity=rarity, slug=slug, variant=variant, status="no_button")
+
+    async def _download_variant(
+        self, rarity: str, slug: str, variant: Variant, out_path: Path
+    ) -> CardResult:
+        wrapper = self.page.locator(_VISIBLE_CARD_WRAPPER_SELECTOR).first
+        await wrapper.wait_for(state="visible", timeout=self.config.card_visible_timeout_ms)
+        await wrapper.hover()
+
+        download_btn = wrapper.locator(_DOWNLOAD_BUTTON_SELECTOR).first
         try:
             await download_btn.wait_for(
                 state="visible", timeout=self.config.download_button_timeout_ms
             )
         except PlaywrightTimeoutError:
-            await self._log_visible_buttons(card_locator)
-            raise _NoDownloadButton(slug)
+            await self._log_visible_buttons(wrapper)
+            raise _NoDownloadButton(f"{slug} ({variant})")
 
         async with self.page.expect_download(timeout=self.config.download_timeout_ms) as dl_info:
             await download_btn.click()
@@ -202,7 +255,7 @@ class CardDownloader:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         await download.save_as(out_path)
         logger.info("  Saved: %s", out_path)
-        return CardResult(rarity=rarity, slug=slug, status="downloaded", path=out_path)
+        return CardResult(rarity=rarity, slug=slug, variant=variant, status="downloaded", path=out_path)
 
     async def _log_visible_buttons(self, card_locator: Locator) -> None:
         logger.warning("  NO DOWNLOAD BUTTON FOUND near card")
@@ -236,8 +289,8 @@ async def run(config: DownloaderConfig) -> RunSummary:
                     slugs = slugs[: config.max_cards_per_rarity]
 
                 for slug in slugs:
-                    result = await downloader.download_card(rarity, slug)
-                    summary.results.append(result)
+                    results = await downloader.download_card(rarity, slug)
+                    summary.results.extend(results)
                     await page.wait_for_timeout(config.inter_card_delay_ms)
         finally:
             await browser.close()
@@ -247,7 +300,7 @@ async def run(config: DownloaderConfig) -> RunSummary:
 
 def main() -> None:
     # Debugging with a single card first; set max_cards_per_rarity=None once verified.
-    config = DownloaderConfig(rarities=["ancient"], max_cards_per_rarity=1)
+    config = DownloaderConfig(rarities=["uncommon"], max_cards_per_rarity=None)
     summary = asyncio.run(run(config))
     print()
     print(summary.report())
