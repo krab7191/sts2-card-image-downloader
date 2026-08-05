@@ -86,7 +86,7 @@ class PostprocessConfig(BaseModel):
     border_px: int = Field(30, ge=0)
     corner_radius_px: int = Field(20, ge=0)
     alpha_threshold: int = Field(10, ge=0, le=255)
-    output_size: tuple[int, int] = (750, 1050)
+    output_size: tuple[int, int] = (825, 1125)
 
 
 def process_card(src: Path, config: PostprocessConfig) -> Image.Image:

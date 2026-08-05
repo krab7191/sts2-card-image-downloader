@@ -5,3 +5,4 @@ cards/*
 !cards/.gitkeep
 finished_cards/*
 !finished_cards/.gitkeep
+card_back.png
