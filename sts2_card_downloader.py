@@ -300,7 +300,7 @@ async def run(config: DownloaderConfig) -> RunSummary:
 
 def main() -> None:
     # Debugging with a single card first; set max_cards_per_rarity=None once verified.
-    config = DownloaderConfig(rarities=["uncommon"], max_cards_per_rarity=None)
+    config = DownloaderConfig(rarities=["basic"], max_cards_per_rarity=None)
     summary = asyncio.run(run(config))
     print()
     print(summary.report())
