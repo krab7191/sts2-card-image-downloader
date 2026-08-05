@@ -1,9 +1,10 @@
 """
 STS2 Card Downloader
 
-Visits each card page on Untapped.gg, grouped by rarity (ancient, rare,
-uncommon, ...), and clicks the download button to save the card artwork
-locally.
+Discovers cards on Untapped.gg by filtering the card listing by rarity
+(via the `?rarity=` query param, paginating as needed), then visits each
+card page, hovers to reveal the download control, and clicks it to save
+the card artwork locally.
 
 Usage:
   pip install -r requirements.txt
@@ -21,7 +22,6 @@ from pathlib import Path
 from typing import Literal
 
 from playwright.async_api import (
-    Download,
     Locator,
     Page,
     TimeoutError as PlaywrightTimeoutError,
@@ -34,34 +34,11 @@ logger = logging.getLogger("sts2_card_downloader")
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
-ANCIENT_CARDS = [
-    "abundance", "apotheosis", "apparition", "biased-cognition", "break",
-    "brightest-flame", "corruption", "forbidden-grimoire", "maul",
-    "meteor-shower", "neows-fury", "protector", "quadcast", "relax",
-    "suppress", "the-sealed-throne", "whistle", "wish", "wraith-form",
-]
-
-# Add more rarities here as slug lists become available, e.g.
-# "rare": [...], "uncommon": [...].
-CARDS_BY_RARITY: dict[str, list[str]] = {
-    "ancient": ANCIENT_CARDS,
-}
-
-# Tried in order against the hover-revealed download control.
-DOWNLOAD_BUTTON_SELECTORS = [
-    'button[aria-label*="download" i]',
-    'a[aria-label*="download" i]',
-    'button[title*="download" i]',
-    'a[title*="download" i]',
-    '[role="button"][aria-label*="download" i]',
-    '[role="button"][title*="download" i]',
-    'button:has(i.fa-download)',
-    'button:has(svg[class*="download" i])',
-    'a:has(i.fa-download)',
-    'a:has(svg[class*="download" i])',
-    '[data-tooltip*="download" i]',
-    '[tooltip*="download" i]',
-]
+# The wrapper that reveals a copy/download button pair on hover. Scoping to
+# this (rather than searching the whole page) avoids matching unrelated
+# "download the overlay app" nav/promo links elsewhere on the site.
+_CARD_WRAPPER_SELECTOR = '[class*="HoverCopyButton-module-scss-module"][class*="container"]'
+_DOWNLOAD_BUTTON_SELECTOR = 'button:has(i.fa-arrow-down-to-line)'
 
 
 class _NoDownloadButton(Exception):
@@ -69,38 +46,40 @@ class _NoDownloadButton(Exception):
 
 
 class DownloaderConfig(BaseModel):
-    base_url: HttpUrl = HttpUrl("https://sts2.untapped.gg/en/cards/")
+    listing_url: HttpUrl = HttpUrl("https://sts2.untapped.gg/en/cards")
+    card_base_url: HttpUrl = HttpUrl("https://sts2.untapped.gg/en/cards/")
     output_dir: Path = Path("cards")
-    cards_by_rarity: dict[str, list[str]] = Field(
-        default_factory=lambda: dict(CARDS_BY_RARITY)
-    )
+    rarities: list[str] = Field(default_factory=lambda: ["ancient"])
+    max_cards_per_rarity: int | None = None
+    max_listing_pages: int = 20
     headless: bool = False
     overwrite: bool = False
     nav_timeout_ms: int = 15_000
     card_visible_timeout_ms: int = 10_000
-    button_probe_timeout_ms: int = 1_000
+    download_button_timeout_ms: int = 8_000
     download_timeout_ms: int = 10_000
-    hover_settle_ms: int = 500
+    listing_settle_ms: int = 1_000
     inter_card_delay_ms: int = 1_000
     max_attempts_per_card: int = 2
 
-    @field_validator("cards_by_rarity")
+    @field_validator("rarities")
     @classmethod
-    def _cards_valid_and_nonempty(cls, cards: dict[str, list[str]]) -> dict[str, list[str]]:
-        if not cards:
-            raise ValueError("cards_by_rarity must contain at least one rarity")
-        for rarity, slugs in cards.items():
-            if not _SLUG_RE.match(rarity):
-                raise ValueError(f"invalid rarity name, expected kebab-case: {rarity!r}")
-            if not slugs:
-                raise ValueError(f"rarity {rarity!r} has no card slugs")
-            bad = [s for s in slugs if not _SLUG_RE.match(s)]
-            if bad:
-                raise ValueError(f"invalid slug(s) for rarity {rarity!r}: {bad}")
-        return cards
+    def _rarities_valid_and_nonempty(cls, rarities: list[str]) -> list[str]:
+        if not rarities:
+            raise ValueError("rarities must contain at least one value")
+        bad = [r for r in rarities if not _SLUG_RE.match(r)]
+        if bad:
+            raise ValueError(f"invalid rarity value(s), expected kebab-case: {bad}")
+        return rarities
 
     def card_url(self, slug: str) -> str:
-        return f"{str(self.base_url).rstrip('/')}/{slug}"
+        return f"{str(self.card_base_url).rstrip('/')}/{slug}"
+
+    def listing_page_url(self, rarity: str, page: int) -> str:
+        url = f"{str(self.listing_url).rstrip('/')}?rarity={rarity}"
+        if page > 1:
+            url += f"&page={page}"
+        return url
 
     def output_path(self, rarity: str, slug: str) -> Path:
         return self.output_dir / rarity / f"{slug}.png"
@@ -141,6 +120,33 @@ class CardDownloader:
         self.page = page
         self.config = config
 
+    async def discover_slugs(self, rarity: str) -> list[str]:
+        slugs: list[str] = []
+        seen: set[str] = set()
+
+        for page_num in range(1, self.config.max_listing_pages + 1):
+            url = self.config.listing_page_url(rarity, page_num)
+            logger.info("Discovering %s cards (page %d) ...", rarity, page_num)
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.nav_timeout_ms)
+            await self.page.wait_for_timeout(self.config.listing_settle_ms)
+
+            links = self.page.locator('a[href^="/en/cards/"]')
+            found_new = False
+            for i in range(await links.count()):
+                href = await links.nth(i).get_attribute("href")
+                slug = (href or "").rsplit("/", 1)[-1]
+                if slug and slug not in seen:
+                    seen.add(slug)
+                    slugs.append(slug)
+                    found_new = True
+
+            has_next_page = await self.page.locator('button[aria-label="Next page"]').count() > 0
+            if not has_next_page or not found_new:
+                break
+
+        logger.info("Discovered %d %s card(s)", len(slugs), rarity)
+        return slugs
+
     async def download_card(self, rarity: str, slug: str) -> CardResult:
         out_path = self.config.output_path(rarity, slug)
         if out_path.exists() and not self.config.overwrite:
@@ -174,91 +180,38 @@ class CardDownloader:
     async def _attempt_download(self, rarity: str, slug: str, out_path: Path) -> CardResult:
         url = self.config.card_url(slug)
         logger.info("Loading: %s/%s ...", rarity, slug)
-        await self.page.goto(
-            url, wait_until="domcontentloaded", timeout=self.config.nav_timeout_ms
-        )
+        await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.nav_timeout_ms)
 
-        card_locator = self.page.locator('[class*="CardBuilder"]').first
-        await card_locator.wait_for(
-            state="visible", timeout=self.config.card_visible_timeout_ms
-        )
+        card_locator = self.page.locator(_CARD_WRAPPER_SELECTOR).first
+        await card_locator.wait_for(state="visible", timeout=self.config.card_visible_timeout_ms)
         await card_locator.hover()
-        await self.page.wait_for_timeout(self.config.hover_settle_ms)
 
-        download = await self._trigger_download(card_locator)
-        if download is None:
-            await self._log_visible_buttons()
+        download_btn = card_locator.locator(_DOWNLOAD_BUTTON_SELECTOR).first
+        try:
+            await download_btn.wait_for(
+                state="visible", timeout=self.config.download_button_timeout_ms
+            )
+        except PlaywrightTimeoutError:
+            await self._log_visible_buttons(card_locator)
             raise _NoDownloadButton(slug)
+
+        async with self.page.expect_download(timeout=self.config.download_timeout_ms) as dl_info:
+            await download_btn.click()
+        download = await dl_info.value
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         await download.save_as(out_path)
         logger.info("  Saved: %s", out_path)
         return CardResult(rarity=rarity, slug=slug, status="downloaded", path=out_path)
 
-    async def _trigger_download(self, card_locator: Locator) -> Download | None:
-        for sel in DOWNLOAD_BUTTON_SELECTORS:
-            btn = self.page.locator(sel).first
-            try:
-                visible = await btn.is_visible(timeout=self.config.button_probe_timeout_ms)
-            except PlaywrightTimeoutError:
-                continue
-            if not visible:
-                continue
-            async with self.page.expect_download(
-                timeout=self.config.download_timeout_ms
-            ) as dl_info:
-                await btn.click()
-            logger.info("  Clicked: %s", sel)
-            return await dl_info.value
-
-        return await self._trigger_download_fallback(card_locator)
-
-    async def _trigger_download_fallback(self, card_locator: Locator) -> Download | None:
-        card_box = await card_locator.bounding_box()
-        if not card_box:
-            return None
-
-        candidates = await self.page.locator('button, a, [role="button"]').all()
-        for item in candidates:
-            try:
-                box = await item.bounding_box()
-                if not box:
-                    continue
-                if abs(box["x"] - card_box["x"]) >= 300 or abs(box["y"] - card_box["y"]) >= 400:
-                    continue
-                aria = await item.get_attribute("aria-label") or ""
-                title = await item.get_attribute("title") or ""
-                text = (await item.text_content() or "").strip()
-                if "download" not in (aria + title + text).lower():
-                    continue
-                async with self.page.expect_download(
-                    timeout=self.config.download_timeout_ms
-                ) as dl_info:
-                    await item.click()
-                logger.info(
-                    '  Clicked fallback: aria="%s" title="%s" text="%s"', aria, title, text
-                )
-                return await dl_info.value
-            except Exception:
-                continue
-        return None
-
-    async def _log_visible_buttons(self) -> None:
-        logger.warning("  NO DOWNLOAD BUTTON FOUND")
-        items = await self.page.locator('button, a, [role="button"]').all()
+    async def _log_visible_buttons(self, card_locator: Locator) -> None:
+        logger.warning("  NO DOWNLOAD BUTTON FOUND near card")
+        items = await card_locator.locator("button, a, i").all()
         for item in items[:20]:
             try:
-                if not await item.is_visible():
-                    continue
-                aria = await item.get_attribute("aria-label") or ""
-                title = await item.get_attribute("title") or ""
-                text = (await item.text_content() or "").strip()[:40]
                 cls = await item.get_attribute("class") or ""
-                if aria or title or text:
-                    logger.warning(
-                        '    aria="%s" title="%s" text="%s" class="%s"',
-                        aria, title, text, cls[:60],
-                    )
+                text = (await item.text_content() or "").strip()[:40]
+                logger.warning('    class="%s" text="%s"', cls[:100], text)
             except Exception:
                 continue
 
@@ -277,7 +230,11 @@ async def run(config: DownloaderConfig) -> RunSummary:
             page = await context.new_page()
             downloader = CardDownloader(page, config)
 
-            for rarity, slugs in config.cards_by_rarity.items():
+            for rarity in config.rarities:
+                slugs = await downloader.discover_slugs(rarity)
+                if config.max_cards_per_rarity is not None:
+                    slugs = slugs[: config.max_cards_per_rarity]
+
                 for slug in slugs:
                     result = await downloader.download_card(rarity, slug)
                     summary.results.append(result)
@@ -289,8 +246,8 @@ async def run(config: DownloaderConfig) -> RunSummary:
 
 
 def main() -> None:
-    # Debugging with a single card first; switch to CARDS_BY_RARITY once verified.
-    config = DownloaderConfig(cards_by_rarity={"ancient": ANCIENT_CARDS[:1]})
+    # Debugging with a single card first; set max_cards_per_rarity=None once verified.
+    config = DownloaderConfig(rarities=["ancient"], max_cards_per_rarity=1)
     summary = asyncio.run(run(config))
     print()
     print(summary.report())
