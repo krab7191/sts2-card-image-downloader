@@ -8,26 +8,6 @@
     "rarity": "ancient"
   },
   {
-    "slug": "arsenal",
-    "rarity": "rare"
-  },
-  {
-    "slug": "beat-into-shape",
-    "rarity": "rare"
-  },
-  {
-    "slug": "big-bang",
-    "rarity": "rare"
-  },
-  {
-    "slug": "bombardment",
-    "rarity": "rare"
-  },
-  {
-    "slug": "bundle-of-joy",
-    "rarity": "rare"
-  },
-  {
     "slug": "comet",
     "rarity": "rare"
   },
@@ -40,31 +20,7 @@
     "rarity": "rare"
   },
   {
-    "slug": "genesis",
-    "rarity": "rare"
-  },
-  {
-    "slug": "hammer-time",
-    "rarity": "rare"
-  },
-  {
-    "slug": "heavenly-drill",
-    "rarity": "rare"
-  },
-  {
-    "slug": "make-it-so",
-    "rarity": "rare"
-  },
-  {
-    "slug": "monarchs-gaze",
-    "rarity": "rare"
-  },
-  {
     "slug": "neutron-aegis",
-    "rarity": "rare"
-  },
-  {
-    "slug": "seeking-edge",
     "rarity": "rare"
   },
   {
@@ -76,23 +32,7 @@
     "rarity": "rare"
   },
   {
-    "slug": "tyranny",
-    "rarity": "rare"
-  },
-  {
-    "slug": "void-form",
-    "rarity": "rare"
-  },
-  {
     "slug": "alignment",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "bulwark",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "child-of-the-stars",
     "rarity": "uncommon"
   },
   {
@@ -108,59 +48,11 @@
     "rarity": "uncommon"
   },
   {
-    "slug": "hegemony",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "kingly-kick",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "kingly-punch",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "largesse",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "lunar-blast",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "manifest-authority",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "monologue",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "parry",
-    "rarity": "uncommon"
-  },
-  {
     "slug": "particle-wall",
     "rarity": "uncommon"
   },
   {
-    "slug": "pillar-of-creation",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "plot",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "prophesize",
-    "rarity": "uncommon"
-  },
-  {
     "slug": "quasar",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "radiate",
     "rarity": "uncommon"
   },
   {
@@ -176,27 +68,11 @@
     "rarity": "uncommon"
   },
   {
-    "slug": "shockwave",
-    "rarity": "uncommon"
-  },
-  {
     "slug": "stardust",
     "rarity": "uncommon"
   },
   {
-    "slug": "supermassive",
-    "rarity": "uncommon"
-  },
-  {
-    "slug": "terraforming",
-    "rarity": "uncommon"
-  },
-  {
     "slug": "astral-pulse",
-    "rarity": "common"
-  },
-  {
-    "slug": "celestial-might",
     "rarity": "common"
   },
   {
@@ -208,51 +84,11 @@
     "rarity": "common"
   },
   {
-    "slug": "crush-under",
-    "rarity": "common"
-  },
-  {
-    "slug": "gather-light",
-    "rarity": "common"
-  },
-  {
     "slug": "guiding-star",
     "rarity": "common"
   },
   {
-    "slug": "know-thy-place",
-    "rarity": "common"
-  },
-  {
-    "slug": "patter",
-    "rarity": "common"
-  },
-  {
-    "slug": "refine-blade",
-    "rarity": "common"
-  },
-  {
-    "slug": "solar-strike",
-    "rarity": "common"
-  },
-  {
-    "slug": "spoils-of-battle",
-    "rarity": "common"
-  },
-  {
-    "slug": "defend-regent",
-    "rarity": "basic"
-  },
-  {
     "slug": "falling-star",
-    "rarity": "basic"
-  },
-  {
-    "slug": "strike-regent",
-    "rarity": "basic"
-  },
-  {
-    "slug": "venerate",
     "rarity": "basic"
   }
 ]
